@@ -2,11 +2,8 @@ pipeline {
     agent any
 
     environment {
-        CONFIG_FILE = 'pipeline.config'
-        DEPLOY_SSH_CREDS = 'deploy-server-ssh'
+        
         VENV_PATH = 'venv'
-        DEPLOY_DIR = '/home/vaibhavi/apps/btp-example-5'
-        REPORTS_DIR = 'reports'
     }
 
     stages {
@@ -14,25 +11,6 @@ pipeline {
             steps {
                 // Use Jenkins SCM checkout (configured in job settings)
                 checkout scm
-                script {
-                    // Parse pipeline.config (KEY=VALUE format)
-                    def configLines = readFile(CONFIG_FILE).readLines()
-                    def config = [:]
-                    configLines.each { line ->
-                        if (line && !line.trim().startsWith('#') && line.contains('=')) {
-                            def parts = line.split('=', 2)
-                            config[parts[0].trim()] = parts[1].trim()
-                        }
-                    }
-                    env.DEPLOY_HOST = config.DEPLOY_HOST
-                    env.DEPLOY_USER = config.DEPLOY_USER
-                    env.DEPLOY_BRANCH = config.DEPLOY_BRANCH
-                    env.APP_NAME = config.APP_NAME ?: 'btp-app'
-                    env.APP_COMMAND = config.APP_COMMAND ?: 'python main.py'
-                    env.APP_PORT = config.APP_PORT ?: ''
-                    
-                    echo "✅ Config loaded: ${APP_NAME} → ${DEPLOY_HOST}:${APP_PORT ?: 'N/A'}"
-                }
             }
         }
 
@@ -188,66 +166,5 @@ EOF
             }
         }
 
-        stage('deploy') {
-            when {
-                branch "${env.DEPLOY_BRANCH}"
-            }
-            steps {
-                script {
-                    echo "🚀 Deploying ${APP_NAME} to ${DEPLOY_HOST}..."
-                    
-                    // Transfer package and deploy via SSH
-                    sshagent(credentials: [DEPLOY_SSH_CREDS]) {
-                        sh """
-                            # Create remote app directory
-                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_USER}@${DEPLOY_HOST} \\
-                                "mkdir -p ${DEPLOY_DIR}"
-                            
-                            # Copy deployment package to laptop
-                            echo "   Transferring files..."
-                            scp -o StrictHostKeyChecking=no -r deploy-package/* \\
-                                ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/
-                            
-                            # Execute deployment on laptop
-                            echo "   Running deployment..."
-                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_USER}@${DEPLOY_HOST} \\
-                                "cd ${DEPLOY_DIR} && \\
-                                . venv/bin/activate && \\
-                                pip install -q -r deploy-requirements.txt && \\
-                                echo '   Stopping existing process...' && \\
-                                pkill -f '${APP_NAME}' 2>/dev/null || true && \\
-                                sleep 2 && \\
-                                echo '   Starting ${APP_NAME}...' && \\
-                                nohup ${APP_COMMAND} > ${APP_NAME}.log 2>&1 & \\
-                                echo \$! > ${APP_NAME}.pid && \\
-                                ${APP_PORT:+echo "   App listening on port ${APP_PORT}"} && \\
-                                echo '✅ ${APP_NAME} started (PID: \$(cat ${APP_NAME}.pid))'"
-                        """
-                    }
-                    echo "✅ Deployment complete: ${APP_NAME} running on ${DEPLOY_HOST}"
-                }
-            }
-        }
-    }
-
-    post {
-        always {
-            // Archive test reports for historical viewing
-            archiveArtifacts artifacts: "${REPORTS_DIR}/**/*", allowEmptyArchive: true, onlyIfSuccessful: false
-            
-            // Cleanup workspace
-            cleanWs()
-        }
-        failure {
-            echo '❌ Pipeline FAILED - Check console output for details'
-            // Optional: Add email/Slack notification here
-        }
-        success {
-            echo "🎉 SUCCESS: ${APP_NAME} deployed to ${DEPLOY_HOST}:${DEPLOY_DIR}"
-            echo "   📊 View reports: Jenkins → ${JOB_NAME} #${BUILD_NUMBER} → 'Test Coverage Report'"
-        }
-        unstable {
-            echo '⚠️ Pipeline UNSTABLE - Tests or quality checks had issues'
-        }
     }
 }
